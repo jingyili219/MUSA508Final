@@ -39,48 +39,46 @@ crime<-read.csv("DATA/Crime_Reporting_Statistics.csv")%>%
   mutate(X = as.numeric(Longitude),Y = as.numeric(Latitude)) %>% 
     na.omit() %>%
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
-    st_transform('EPSG:2223')%>%
-    distinct()
+    st_transform('EPSG:2223')
 graffiti<- read.csv("DATA/Transportation_Graffiti_20231129.csv")%>%
   mutate(X = as.numeric(Longitude),Y = as.numeric(Latitude)) %>% 
     na.omit() %>%
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
-    st_transform('EPSG:2223')%>%
-    distinct()
+    st_transform('EPSG:2223')
 homeless<-read.csv("DATA/Unsheltered_Point_in_Time__PIT__Count_Phoenix_Metro_Area_20231129.csv")%>%
   mutate(X = as.numeric(Longitude),Y = as.numeric(Latitude)) %>% 
     na.omit() %>%
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
-    st_transform('EPSG:2223')%>%
-    distinct()
+    st_transform('EPSG:2223')
+
 census20<-  get_acs(geography = "block group",
           variables = c("B19013_001E",# medHH income
                         "B01003_001E",#total pop
                         "B15003_022E",# bachelor or more
                         "B23025_005E",# unemployed
-                        "B02008_002E",# white alone
-                        "B02009_002E"),#black alone
+                        "B02001_002E",# white alone
+                        "B02001_003E"),#black alone
           year=2020, state=04,
           county=13, geometry=TRUE) %>% 
   st_transform('EPSG:2223')
 
-census20<-census%>%
+census20<-census20%>%
   dplyr::select( -NAME, -moe) %>%
   spread(key = variable, value = estimate) %>%
-  rename(TotalPop = B01003_001E, 
-         MedHHInc = B19013_001E, 
-         BachMore = B150003_22E,
-         Unemploy = B23025_005E,
-         BlackAlone = B02009_002E,
-         WhiteAlone = B02008_002E
+  rename(TotalPop = B01003_001, 
+         MedHHInc = B19013_001, 
+         BachMore = B15003_022,
+         Unemploy = B23025_005,
+         BlackAlone = B02001_003,
+         WhiteAlone = B02001_002
          )
 
 census20<- 
-  census %>%
+  census20 %>%
   mutate(pctUnemploy = ifelse(TotalPop > 0, Unemploy / TotalPop, 0),
-         pctWhite = ifelse(TotalPop > 0, (WhiteAlone / MobilityTotal), 0),
-         pctBlack = ifelse(TotalPop > 0, BlackAlone / TotalPop, 0,),
-         pctBachMore= ifelse(TotalPop>0, BachMore / TotalPop, 0,),
+         pctWhite = ifelse(TotalPop > 0, (WhiteAlone / TotalPop), 0),
+         pctBlack = ifelse(TotalPop > 0, (BlackAlone / TotalPop), 0),
+         pctBachMore= ifelse(TotalPop>0, (BachMore / TotalPop), 0),
          year = "2020") %>%
   dplyr::select(-BachMore,-Unemploy,-BlackAlone,-WhiteAlone)
 ```
