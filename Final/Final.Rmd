@@ -24,6 +24,16 @@ library(grid)
 library(gridExtra)
 library(ggcorrplot)
 library(stargazer)
+library(viridis)
+library(spatstat.explore)
+library(raster)
+library(spdep)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(knitr)
+library(classInt)
+library(RSocrata)
 ```
 
 ## Project
@@ -99,13 +109,16 @@ census20<-
          pctBachMore= ifelse(TotalPop>0, (BachMore / TotalPop), 0),
          year = "2020") %>%
   dplyr::select(-BachMore,-Unemploy,-BlackAlone,-WhiteAlone)
+
+mesaBoundary<- st_read("https://services2.arcgis.com/1gVyYKfYgW5Nxb1V/arcgis/rest/services/CityBoundary/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson")%>%
+  st_transform('EPSG:2223')
 ```
 
 ## Exploratory analysis
 
-You can also embed plots, for example:
+### Point graph of drug overdose
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r echo=TRUE,results='hide', message=FALSE, warning=FALSE}
+
 ```
 
