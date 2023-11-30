@@ -8,22 +8,10 @@ output: html_document
 ## Set Up
 
 ```{r setup, include=FALSE}
-library(geos)
-library(rsgeo)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 library(tidyverse)
-library(tidycensus)
 library(sf)
-library(kableExtra)
-library(knitr)
-library(dplyr)
-library(spdep)
-library(caret)
-library(ckanr)
-library(FNN)
-library(grid)
-library(gridExtra)
-library(ggcorrplot)
-library(stargazer)
+library(RSocrata)
 library(viridis)
 library(spatstat.explore)
 library(raster)
@@ -32,8 +20,9 @@ library(FNN)
 library(grid)
 library(gridExtra)
 library(knitr)
+library(kableExtra)
+library(tidycensus)
 library(classInt)
-library(RSocrata)
 ```
 
 ## Project
@@ -68,7 +57,7 @@ crime<-read.csv("DATA/Police_Incidents.csv")%>%
     na.omit() %>%
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
     st_transform('EPSG:2223')
-graffiti<- read.csv("DATA/Transportation_Graffiti_20231129.csv")%>%
+graffitti<- read.csv("DATA/Transportation_Graffiti_20231129.csv")%>%
   mutate(X = as.numeric(Longitude),Y = as.numeric(Latitude)) %>% 
     na.omit() %>%
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
@@ -116,9 +105,72 @@ mesaBoundary<- st_read("https://services2.arcgis.com/1gVyYKfYgW5Nxb1V/arcgis/res
 
 ## Exploratory analysis
 
-### Point graph of drug overdose
+### Point and density graph of drug overdose
 
 ```{r echo=TRUE,results='hide', message=FALSE, warning=FALSE}
+grid.arrange(ncol=2,
+ggplot() + 
+  geom_sf(data = mesaBoundary) +
+  geom_sf(data = drugOverdose, colour="red", size=0.1, show.legend = "point") +
+  labs(title= "Drug Overdose, Mesa - 2020") +
+  theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank()),
 
+ggplot() + 
+  geom_sf(data = mesaBoundary, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(drugOverdose)), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_viridis() +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of Drug Overdose") +
+  theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank()) + theme(legend.position = "none"))
+```
+
+## Creating Fishnet 
+
+```{r fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
+fishnet <- 
+  st_make_grid(mesaBoundary,
+               cellsize = 500, 
+               square = TRUE) %>%
+  .[mesaBoundary] %>%            # fast way to select intersecting polygons
+  st_sf() %>%
+  mutate(uniqueID = 1:n())
+fishnet
+```
+
+## Join Points to Fishnet  
+
+```{r}
+drugNet <- 
+  dplyr::select(drugOverdose) %>% 
+  mutate(countOverdose = 1) %>% 
+  aggregate(., fishnet, sum) %>%
+  mutate(countOverdose = replace_na(countOverdose, 0),
+         uniqueID = rownames(.),
+         cvID = sample(round(nrow(fishnet) / 24), size=nrow(fishnet), replace = TRUE))
+
+ggplot() +
+  geom_sf(data = drugNet, aes(fill = countOverdose)) +
+  scale_fill_viridis() +
+  labs(title = "Count of Drug Overdose for the Fishnet")+
+  theme_minimal()
+```
+
+## Join Risk Factors into Fishnet
+
+```{r}
+vars_net <- 
+  rbind(crime, graffitti, homeless,census20) %>%
+  st_join(fishnet, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID, Legend) %>%
+  summarize(count = n()) %>%
+  full_join(fishnet) %>%
+  spread(Legend, count, fill = 0) %>%
+  st_as_sf() %>%
+  dplyr::select(-`<NA>`) %>%
+  na.omit() %>%
+  ungroup()
 ```
 
