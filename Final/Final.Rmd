@@ -23,6 +23,9 @@ library(knitr)
 library(kableExtra)
 library(tidycensus)
 library(classInt)
+
+options(tigris_class = "sf")
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
 ```
 
 ## Project
@@ -116,7 +119,7 @@ ggplot() +
 ```{r fig.height=6, fig.width=10, message=FALSE, warning=FALSE}
 fishnet <- 
   st_make_grid(mesaBoundary,
-               cellsize = 500, 
+               cellsize = 1500, 
                square = TRUE) %>%
   .[mesaBoundary] %>%            # fast way to select intersecting polygons
   st_sf() %>%
@@ -213,16 +216,21 @@ do.call(grid.arrange,c(mapList, ncol=3, top="Risk Factors by Fishnet"))
 st_c    <- st_coordinates
 st_coid <- st_centroid
 
+crime_coordinates <- st_c(crime)
+graffiti_coordinates <- st_c(graffiti)
+homeless_coordinates <- st_c(homeless)
+vars_net_coordinates <- st_c(st_coid(vars_net))
 # create NN for alley light out and bars
 vars_net <-
   vars_net %>%
     mutate(
       crime.nn =
-        nn_function(st_c(st_coid(vars_net)), st_c(crime),3),
+        nn_function(vars_net_coordinates, crime_coordinates,3),
       graffiti.nn =
-        nn_function(st_c(st_coid(vars_net)), st_c(graffiti),3),
+        nn_function(vars_net_coordinates, graffiti_coordinates,3),
       homeless.nn =
-        nn_function(st_c(st_coid(vars_net)), st_c(homeless),3))
+        nn_function(vars_net_coordinates, homeless_coordinates,3)
+      )
 
 #plot multiple maps using for loop
 vars_net.long.nn <- 
