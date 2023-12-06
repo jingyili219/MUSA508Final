@@ -147,7 +147,7 @@ ggplot() +
 ### Drug Overdose count histogram
 
 ```{r}
-ggplot(final_net, aes(x = countOverdose)) +
+ggplot(drugNet, aes(x = countOverdose)) +
   geom_histogram(binwidth = 5, fill = "blue", color = "black") +
   labs(title = "Overdose Histogram",
        x = "Overdose Count",
@@ -331,10 +331,10 @@ do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Drug
 ### Correlation
 
 ```{r fig.height=12,fig.width=8}
+vars_net$uniqueID <- as.numeric(vars_net$uniqueID)
 drugNet$uniqueID <- as.numeric(drugNet$uniqueID)
 final_net <-
   left_join(drugNet, st_drop_geometry(vars_net), by="uniqueID") 
-
 correlation.long <-
   st_drop_geometry(final_net) %>%
     dplyr::select(-uniqueID, -cvID) %>%
