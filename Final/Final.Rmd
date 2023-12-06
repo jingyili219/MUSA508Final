@@ -58,7 +58,7 @@ drugOverdose<-read.csv("DATA/Fire_and_Medical_Opioid_Overdose_Incidents.csv")%>%
 mesaBoundary<- st_read("https://services2.arcgis.com/1gVyYKfYgW5Nxb1V/arcgis/rest/services/CityBoundary/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson")%>%
   st_transform('EPSG:2223')
 
-census20<-  get_acs(geography = "block group",
+census20<-  get_acs(geography = "tract",
           variables = c("B19013_001E",# medHH income
                         "B01003_001E",#total pop
                         "B15003_022E",# bachelor or more
@@ -144,10 +144,18 @@ ggplot() +
   labs(title = "Count of Drug Overdose for the Fishnet")+
   theme_minimal()
 ```
+### Drug Overdose count histogram
+
+```{r}
+ggplot(final_net, aes(x = countOverdose)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "black") +
+  labs(title = "Overdose Histogram",
+       x = "Overdose Count",
+       y = "Frequency")
+```
 
 ### Join Risk Factors into Fishnet
 
- 
 ```{r}
 #Risk Factors Data
 crime<-read.socrata("https://data.mesaaz.gov/Police/Police-Incidents/39rt-2rfj")%>%
@@ -171,14 +179,22 @@ homeless<-read.csv("DATA/Unsheltered_Point_in_Time__PIT__Count_Phoenix_Metro_Are
     st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
     st_transform(st_crs(fishnet)) %>%
     mutate(Legend = "homeless")
-  
+hospital<-st_read("DATA/Hospitals_031816.geojson")%>%
+  filter(CITY=="MESA")%>%
+  dplyr::select(geometry=geometry)%>%
+  st_transform(st_crs(fishnet))%>%
+  mutate(Legend="hospital")
+park<-st_read("DATA/Park and Recreation Areas.geojson")%>%
+  dplyr::select(geometry=geometry)%>%
+  st_transform(st_crs(fishnet))%>%
+  mutate(Legend="park")
 
 ```
 
 
 ```{r}
 vars_net <- 
-  rbind(crime,graffiti, homeless) %>%
+  rbind(crime,graffiti, homeless,hospital,park) %>%
   st_join(fishnet, join = st_within) %>%
   st_drop_geometry() %>%
   group_by(uniqueID, Legend) %>%
@@ -190,6 +206,7 @@ vars_net <-
   na.omit() %>%
   ungroup()
 ```
+
 ### Plot fishnet of risk factors
 
 ```{r}
@@ -219,8 +236,10 @@ st_coid <- st_centroid
 crime_coordinates <- st_c(crime)
 graffiti_coordinates <- st_c(graffiti)
 homeless_coordinates <- st_c(homeless)
+hospital_coordinates<-st_c(hospital)
+park_coordinates<-st_c(park)
 vars_net_coordinates <- st_c(st_coid(vars_net))
-# create NN for alley light out and bars
+# create NN for risk factors
 vars_net <-
   vars_net %>%
     mutate(
@@ -229,7 +248,11 @@ vars_net <-
       graffiti.nn =
         nn_function(vars_net_coordinates, graffiti_coordinates,3),
       homeless.nn =
-        nn_function(vars_net_coordinates, homeless_coordinates,3)
+        nn_function(vars_net_coordinates, homeless_coordinates,3),
+      hospital.nn =
+        nn_function(vars_net_coordinates, hospital_coordinates,3),
+      park.nn =
+        nn_function(vars_net_coordinates, park_coordinates,3)
       )
 
 #plot multiple maps using for loop
@@ -246,11 +269,68 @@ for(i in vars){
       geom_sf(data = filter(vars_net.long.nn, Variable == i), aes(fill=value), colour=NA) +
       scale_fill_viridis(name="") +
       labs(title=i) +
-      theme_classic()}
+      theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank())}
 
 do.call(grid.arrange,c(mapList, ncol = 3, top = "Nearest Neighbor risk Factors by Fishnet"))
 ```
+### Local Moran's I
+
 ```{r}
+tract<-read_sf("DATA/Mesa Census Tracts To City Boundary/tracts.shp")%>%
+  st_transform(st_crs(fishnet))
+
+#create final net
+vars_net$uniqueID <- as.character(vars_net$uniqueID)
+drugNet$uniqueID <- as.character(drugNet$uniqueID)
+final_net <-
+  left_join(drugNet, st_drop_geometry(vars_net), by="uniqueID") 
+
+#spacially join final net to tracts
+final_net <-
+  st_centroid(final_net) %>%
+    st_join(dplyr::select(tract, tractce)) %>%
+      st_drop_geometry() %>%
+      left_join(dplyr::select(final_net, geometry, uniqueID)) %>%
+      st_sf() %>%
+  na.omit()
+
+## make polygon to tracts 
+final_net.nb <- poly2nb(as_Spatial(final_net), queen=TRUE)
+## make tracts to list of weigths
+final_net.weights <- nb2listw(final_net.nb, style="W", zero.policy=TRUE)
+
+local_morans <- localmoran(final_net$countOverdose, final_net.weights, zero.policy=TRUE) %>% as.data.frame()
+# join local Moran's I results to fishnet
+final_net.localMorans <- 
+  cbind(local_morans, as.data.frame(final_net)) %>% 
+  st_sf() %>%
+  dplyr::select(Overdose_Count = countOverdose, 
+                Local_Morans_I = Ii, 
+                P_Value = `Pr(z != E(Ii))`) %>%
+  mutate(Significant_Hotspots = ifelse(P_Value <= 0.05, 1, 0)) %>%
+  gather(Variable, Value, -geometry)
+
+#plot  
+vars <- unique(final_net.localMorans$Variable)
+varList <- list()
+
+for(i in vars){
+  varList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(final_net.localMorans, Variable == i), 
+              aes(fill = Value), colour=NA) +
+      scale_fill_viridis(name="") +
+      labs(title=i) +
+      mapTheme() + theme(legend.position="bottom")
+}
+
+do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Drug Overdose"))
+```
+
+
+### Correlation
+
+```{r fig.height=12,fig.width=8}
 drugNet$uniqueID <- as.numeric(drugNet$uniqueID)
 final_net <-
   left_join(drugNet, st_drop_geometry(vars_net), by="uniqueID") 
@@ -269,7 +349,7 @@ ggplot(correlation.long, aes(Value, countOverdose)) +
   geom_point(size = 0.1) +
   geom_text(data = correlation.cor, aes(label = paste("r =", round(correlation, 2))),
             x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
-  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  geom_smooth(method = "lm", se = FALSE, colour = "orange") +
   facet_wrap(~Variable, ncol = 2, scales = "free") +
   labs(title = "Overdose count as a function of risk factors") +
   plotTheme()
