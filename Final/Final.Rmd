@@ -250,4 +250,28 @@ for(i in vars){
 
 do.call(grid.arrange,c(mapList, ncol = 3, top = "Nearest Neighbor risk Factors by Fishnet"))
 ```
+```{r}
+drugNet$uniqueID <- as.numeric(drugNet$uniqueID)
+final_net <-
+  left_join(drugNet, st_drop_geometry(vars_net), by="uniqueID") 
+
+correlation.long <-
+  st_drop_geometry(final_net) %>%
+    dplyr::select(-uniqueID, -cvID) %>%
+    gather(Variable, Value, -countOverdose)
+
+correlation.cor <-
+  correlation.long %>%
+    group_by(Variable) %>%
+    summarize(correlation = cor(Value, countOverdose, use = "complete.obs"))
+    
+ggplot(correlation.long, aes(Value, countOverdose)) +
+  geom_point(size = 0.1) +
+  geom_text(data = correlation.cor, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Overdose count as a function of risk factors") +
+  plotTheme()
+```
 
