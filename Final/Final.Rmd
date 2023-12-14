@@ -288,7 +288,7 @@ final_net <-
 #spacially join final net to tracts
 final_net <-
   st_centroid(final_net) %>%
-    st_join(dplyr::select(tract, tractce)) %>%
+    st_join(dplyr::select(tract, namelsad, geoid)) %>%
       st_drop_geometry() %>%
       left_join(dplyr::select(final_net, geometry, uniqueID)) %>%
       st_sf() %>%
@@ -355,3 +355,93 @@ ggplot(correlation.long, aes(Value, countOverdose)) +
   plotTheme()
 ```
 
+```{r}
+reg.vars <- c("crime.nn", "graffiti.nn", "homeless.nn", 
+                 "hospital.nn", "park.nn")
+
+reg.spatialCV <- crossValidate(
+  dataset = final_net,
+  id = "geoid",
+  dependentVariable = "countOverdose",
+  indVariables = reg.vars) %>%
+    dplyr::select(cvID = geoid, countOverdose, Prediction, geometry)
+
+```
+
+```{r}
+reg.summary <- 
+  rbind(
+    mutate(reg.spatialCV,    Error = Prediction - countOverdose,
+                             Regression = "Spatial LOGO-CV: Just Risk Factors")) %>%
+    st_sf() 
+```
+
+```{r}
+error_by_reg_and_fold <- 
+  reg.summary %>%
+    group_by(Regression, cvID) %>% 
+    summarize(Mean_Error = mean(Prediction - countOverdose, na.rm = T),
+              MAE = mean(abs(Mean_Error), na.rm = T),
+              SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
+  ungroup()
+
+error_by_reg_and_fold %>%
+  ggplot(aes(MAE)) + 
+    geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
+    facet_wrap(~Regression) +  
+    geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
+    labs(title="Distribution of MAE", subtitle = "k-fold cross validation vs. LOGO-CV",
+         x="Mean Absolute Error", y="Count") +
+    plotTheme()
+```
+
+```{r}
+st_drop_geometry(error_by_reg_and_fold) %>%
+  group_by(Regression) %>% 
+    summarize(Mean_MAE = round(mean(MAE), 2),
+              SD_MAE = round(sd(MAE), 2)) %>%
+  kable() %>%
+    kable_styling("striped", full_width = F)
+```
+```{r}
+error_by_reg_and_fold %>%
+  filter(str_detect(Regression, "LOGO")) %>%
+  ggplot() +
+    geom_sf(aes(fill = MAE)) +
+    facet_wrap(~Regression) +
+    scale_fill_viridis() +
+    labs(title = "Burglary errors by LOGO-CV Regression") +
+    mapTheme() + theme(legend.position="bottom")
+```
+
+```{r message=FALSE, include=FALSE}
+census20 <- census20 %>%
+  mutate(whiteContext = ifelse(pctWhite > .5, "Majority_White", "Majority_Non_White"),
+         blackContext = ifelse(pctBlack > .1, "Majority_Black", "Majority_Non_Black"),
+         eduContext = ifelse(pctBachMore > .15, "High_Bachmor", "Low_Bachmor"),
+         UnemployedContext = ifelse(pctUnemploy > .02, "High_Unemployed", "Low_Unemployed"),
+         IncomeContext = ifelse(MedHHInc > 65000, "High_Income", "Low_Income")
+         )
+joined_tract <- st_join(tract, census20, by = "geoid")
+```
+
+```{r}
+ggplot(joined_tract) +
+  geom_sf(aes(fill = whiteContext)) +
+  scale_fill_manual(values = c("Majority_White" = "blue", "Majority_Non_White" = "red")) +
+  labs(title = "Map showing Majority White and Non-White Areas",
+       fill = "Demographic Context") +
+  theme_minimal()
+```
+```{r echo=TRUE, message = FALSE}
+reg.summary %>% 
+    st_centroid() %>%
+    st_join(census20) %>%
+    na.omit() %>%
+      st_drop_geometry() %>%
+      group_by(Regression, whiteContext) %>%
+      summarize(mean.Error = mean(Error, na.rm = T)) %>%
+      spread(whiteContext, mean.Error) %>%
+      kable(caption = "Table 1.14 Mean Error by neighborhood racial context") %>%
+        kable_styling("striped", full_width = F)  
+```
