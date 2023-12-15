@@ -1,0 +1,659 @@
+---
+title: '508 Final: Drug Overdose Risk Prediction'
+author: "Jingyi Li & Sihan Ren"
+date: "2023-11-29"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+## Presentation Link in Youtube
+
+https://youtu.be/tADRLzz8kIo
+
+## Project Motivation
+|    Drug issue has always been a serious public health problem in the United States, and it becomes more difficult for cities to control the legality of drug uses. Being Drug overdosed is not only a threat to the person's life, but also is harmful to the environment of the neighborhood. Therefore, in this project, we are going to predict drug overdose incidents to help the city's government, such as the law enforcement agencies and the public health department, better allocate prevention and medical resources. The location of our case study is the City of Mesa in Arizona, which has a high fatal overdose rate for many years. Our predictive model is an application to the government staff, which enables an efficient and accurate use of limited public health resources, and it is for education use in communities which have a high risk of overdose incidents to teach residents how to prevent and report when they see an overdose incident. The application provides clear map visualizations of the incidents' location and incident density, but considering about the privacy of patients, we do not publish the name and the birth date of the patient. 
+
+|    Note that selection bias may be an issue in our model due to under-reporting. Usually, pedestrians might not notice an overdosed person and recognize them as homelessness sleeping on the street so that they might not report the incident to the law enforcement and medical care because of fear or ignorance. Bias might also be caused by social and cultural differences. Different social attitudes and cultural background can influence how drug overdose are perceived. Therefore, our application also encourages the self-reporting system so that the government can receive the reports and update the map synchronously. The application is heavily based on statistical analysis with official data, so the model is the great approach for people to assess the risk of drug events. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(sf)
+library(RSocrata)
+library(viridis)
+library(spatstat)
+library(raster)
+library(spdep)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(tidycensus)
+library(classInt)
+
+options(tigris_class = "sf")
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+```
+
+## Data
+
+|    The data used in our model is divided into two parts: environmental risk factors and demographics risk factors. Considering that incidents of drug overdose may occur in places with less police's control, we find data of crime, graffiti, homelessness, public parks and hospitals from Mesa Open Data Portal, and we retrieve census data of race, educational level, unemployment rate and median household income from US Census Bureau. Since the drug overdose data contains five years, we selected data in 2020 to predict the risks of 2021.
+
+```{r message=FALSE, warning=FALSE, echo=TRUE,results='hide'}
+drugOverdose<-read.csv("DATA/Fire_and_Medical_Opioid_Overdose_Incidents.csv")%>%
+  mutate(X = as.numeric(Longitude),Y = as.numeric(Latitude)) %>% 
+    na.omit() %>%
+    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+    st_transform('EPSG:2223')
+
+mesaBoundary<- st_read("https://services2.arcgis.com/1gVyYKfYgW5Nxb1V/arcgis/rest/services/CityBoundary/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson")%>%
+  st_transform('EPSG:2223')
+
+census20<-  get_acs(geography = "tract",
+          variables = c("B19013_001E",# medHH income
+                        "B01003_001E",#total pop
+                        "B15003_022E",# bachelor or more
+                        "B23025_005E",# unemployed
+                        "B02001_002E",# white alone
+                        "B02001_003E"),#black alone
+          year=2020, state=04,
+          county=13, geometry=TRUE) %>% 
+  st_transform('EPSG:2223')
+
+census20<-census20%>%
+  dplyr::select( -NAME, -moe) %>%
+  spread(key = variable, value = estimate) %>%
+  rename(TotalPop = B01003_001, 
+         MedHHInc = B19013_001, 
+         BachMore = B15003_022,
+         Unemploy = B23025_005,
+         BlackAlone = B02001_003,
+         WhiteAlone = B02001_002
+         )
+
+census20<- 
+  census20 %>%
+  mutate(pctUnemploy = ifelse(TotalPop > 0, Unemploy / TotalPop, 0),
+         pctWhite = ifelse(TotalPop > 0, (WhiteAlone / TotalPop), 0),
+         pctBlack = ifelse(TotalPop > 0, (BlackAlone / TotalPop), 0),
+         pctBachMore= ifelse(TotalPop>0, (BachMore / TotalPop), 0),
+         year = "2020") %>%
+  dplyr::select(-BachMore,-Unemploy,-BlackAlone,-WhiteAlone)
+```
+
+## Exploratory analysis
+
+### Point and density graph of drug overdose
+
+|    Figure 1.1 show the distribution of drug overdose in city of Mesa. The incidents spread across the west and east part of the city, but western area has more incidents than the suburban areas in the south.
+
+```{r echo=TRUE,results='hide', message=FALSE, warning=FALSE}
+filtered_Overdose <- st_intersection(drugOverdose, mesaBoundary) %>%
+  filter(Year == "2020")
+grid.arrange(ncol=2,
+ggplot() + 
+  geom_sf(data = mesaBoundary) +
+  geom_sf(data = filtered_Overdose, colour="red", size=0.1, show.legend = "point") +
+  labs(title= "Drug Overdose, Mesa - 2020",
+       caption = "Figure 3.1") +
+  theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank()),
+
+ggplot() + 
+  geom_sf(data = mesaBoundary, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filtered_Overdose)), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_viridis() +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of Drug Overdose") +
+  theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank()) + theme(legend.position = "none"))
+```
+
+### Count of Drug Overdose in Fishnet 
+
+|    The cell size of the fish net is 1500ft by 1500ft, and the graduated color in each grid cell represents the number of drug overdose incidents happened in that cell. The pattern of the fish net map in Figure 3.2 is similar with that of the density map in Figure 3.1.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+fishnet <- 
+  st_make_grid(mesaBoundary,
+               cellsize = 1500, 
+               square = TRUE) %>%
+  .[mesaBoundary] %>%            # fast way to select intersecting polygons
+  st_sf() %>%
+  mutate(uniqueID = 1:n())
+```
+
+```{r}
+drugNet <- 
+  dplyr::select(filtered_Overdose) %>% 
+  mutate(countOverdose = 1) %>% 
+  aggregate(., fishnet, sum) %>%
+  mutate(countOverdose = replace_na(countOverdose, 0),
+         uniqueID = rownames(.),
+         cvID = sample(round(nrow(fishnet) / 24), size=nrow(fishnet), replace = TRUE))
+
+ggplot() +
+  geom_sf(data = drugNet, aes(fill = countOverdose)) +
+  scale_fill_viridis() +
+  labs(title = "Count of Drug Overdose for the Fishnet",
+       caption = "Figure 3.2")+
+  theme_minimal()
+```
+
+### Drug Overdose count histogram
+
+|    Figure 3.3 shows the frequency of the fishnet by overdose count. Most of the nets do not have an overdose incident, but there are still few of them have more than 1 and even 10 incidents.
+```{r}
+ggplot(drugNet, aes(x = countOverdose)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "black") +
+  labs(title = "Overdose Histogram",
+       x = "Overdose Count",
+       y = "Frequency",
+       caption = "Figure 3.3")
+```
+
+### Environmental Risk Factors Plot in Fishnet Map
+
+|    Since we choose crime, graffiti, homelessness, hospital and parks as the environmental risk factors, we suppose that they are related with the drug activities. Five maps below show the number of each risk factors by the fishnet map. We can see that crime, graffiti, homelessness are all concentrated in western Mesa. Public parks are more scattered across the city, but the amount is also high in the west. There are also three grids with hospitals in the west, but most of them are in the east part, which is the downtonw Mesa.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+#Risk Factors Data
+crime<-read.socrata("https://data.mesaaz.gov/Police/Police-Incidents/39rt-2rfj")%>%
+  mutate(year = substr(report_date,1,4)) %>% filter(year == "2020") %>%
+    dplyr::select(Y = latitude, X = longitude) %>%
+    na.omit() %>%
+    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
+    st_transform(st_crs(fishnet)) %>%
+    mutate(Legend = "crime")
+graffiti<- read.csv("DATA/Transportation_Graffiti_20231129.csv")%>%
+  mutate(year = substr(Date.Reported,1,4))%>%
+    dplyr::select(Y = Latitude, X = Longitude) %>%
+    na.omit() %>%
+    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
+    st_transform(st_crs(fishnet)) %>%
+    mutate(Legend = "graffiti")
+homeless<-read.csv("DATA/Unsheltered_Point_in_Time__PIT__Count_Phoenix_Metro_Area_20231129.csv")%>%
+  mutate(year = substr(Reporting.Date,1,4))%>%
+    dplyr::select(Y = Latitude, X = Longitude) %>%
+    na.omit() %>%
+    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
+    st_transform(st_crs(fishnet)) %>%
+    mutate(Legend = "homeless")
+hospital<-st_read("DATA/Hospitals_031816.geojson")%>%
+  filter(CITY=="MESA")%>%
+  dplyr::select(geometry=geometry)%>%
+  st_transform(st_crs(fishnet))%>%
+  mutate(Legend="hospital")
+park<-st_read("DATA/Park and Recreation Areas.geojson")%>%
+  dplyr::select(geometry=geometry)%>%
+  st_transform(st_crs(fishnet))%>%
+  mutate(Legend="park")
+
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+vars_net <- 
+  rbind(crime,graffiti, homeless,hospital,park) %>%
+  st_join(fishnet, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID, Legend) %>%
+  summarize(count = n()) %>%
+  full_join(fishnet) %>%
+  spread(Legend, count, fill = 0) %>%
+  st_as_sf() %>%
+  dplyr::select(-`<NA>`) %>%
+  na.omit() %>%
+  ungroup()
+```
+
+```{r}
+vars_net.long <- 
+  gather(vars_net, Variable, value, -geometry, -uniqueID)
+
+vars <- unique(vars_net.long$Variable)
+mapList <- list()
+j <- 4
+
+for(i in vars){
+  mapList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(vars_net.long, Variable == i), aes(fill=value), colour=NA) +
+      scale_fill_viridis(name="") +
+      labs(title=i, caption = paste0("Figure 3.", as.character(j))) +
+      theme(axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank())
+  j<-j+1
+  }
+
+do.call(grid.arrange,c(mapList, ncol=3, top="Risk Factors by Fishnet"))
+```
+
+### Nearest Neighbor of Risk Factors
+
+|   Figure 3.9 to Figure 3.13 are plotting maps of risk factors in average nearest neighbor distance, when k=3. North and South Mesa both have a far distance of these environmental factors, and most part of the city has a close distance to crime and graffiti, but western Mesa have a closer distance to each risk factors, especially for homelessness and parks. 
+```{r fig.width=12}
+st_c    <- st_coordinates
+st_coid <- st_centroid
+
+crime_coordinates <- st_c(crime)
+graffiti_coordinates <- st_c(graffiti)
+homeless_coordinates <- st_c(homeless)
+hospital_coordinates<-st_c(hospital)
+park_coordinates<-st_c(park)
+vars_net_coordinates <- st_c(st_coid(vars_net))
+# create NN for risk factors
+vars_net <-
+  vars_net %>%
+    mutate(
+      crime.nn =
+        nn_function(vars_net_coordinates, crime_coordinates,3),
+      graffiti.nn =
+        nn_function(vars_net_coordinates, graffiti_coordinates,3),
+      homeless.nn =
+        nn_function(vars_net_coordinates, homeless_coordinates,3),
+      hospital.nn =
+        nn_function(vars_net_coordinates, hospital_coordinates,3),
+      park.nn =
+        nn_function(vars_net_coordinates, park_coordinates,3)
+      )
+
+#plot multiple maps using for loop
+vars_net.long.nn <- 
+  dplyr::select(vars_net, ends_with(".nn")) %>%
+    gather(Variable, value, -geometry)
+
+vars <- unique(vars_net.long.nn$Variable)
+mapList <- list()
+j <- 9
+for(i in vars){
+  mapList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(vars_net.long.nn, Variable == i), aes(fill=value), colour=NA) +
+      scale_fill_viridis(name="") +
+      labs(title=i, caption = paste0("Figure 3.", as.character(j))) +
+      theme(plot.title = element_text(size = 14),axis.title = element_blank(), axis.text = element_blank(),axis.ticks = element_blank())
+  j <-j+1}
+
+do.call(grid.arrange,c(mapList, ncol = 3, top = "Nearest Neighbor risk Factors by Fishnet"))
+```
+
+### Local Moran's I
+
+|    For Figure 3.14 to Figure 3.17, we used local Moran's I to measure the spatial autocorrelation in a more local scale. A higher Moran's I value indicates a strong and statistically significant local clustering. In Figure 3.15, the west part of the city has the highest Moran's I value. We also created the significant hotspots map in Figure 3.17 if the p-value is less or equal than 0.05. The hotspots marked as yellow refers to the areas significant local spatial autocorrelation in the overdose counts. The division of hotspots and coldspots are essential for the prediction model to be more generalizable.
+```{r fig.height=6, fig.width=12}
+tract<-read_sf("DATA/Mesa Census Tracts To City Boundary/tracts.shp")%>%
+  st_transform(st_crs(fishnet))
+
+#create final net
+vars_net$uniqueID <- as.character(vars_net$uniqueID)
+drugNet$uniqueID <- as.character(drugNet$uniqueID)
+final_net <-
+  left_join(drugNet, st_drop_geometry(vars_net), by="uniqueID") 
+
+#spacially join final net to tracts
+final_net <-
+  st_centroid(final_net) %>%
+    st_join(dplyr::select(tract, namelsad, geoid)) %>%
+      st_drop_geometry() %>%
+      left_join(dplyr::select(final_net, geometry, uniqueID)) %>%
+      st_sf() %>%
+  na.omit()
+
+
+## make polygon to tracts 
+final_net.nb <- poly2nb(as_Spatial(final_net), queen=TRUE)
+## make tracts to list of weigths
+final_net.weights <- nb2listw(final_net.nb, style="W", zero.policy=TRUE)
+
+local_morans <- localmoran(final_net$countOverdose, final_net.weights, zero.policy=TRUE) %>% as.data.frame()
+# join local Moran's I results to fishnet
+final_net.localMorans <- 
+  cbind(local_morans, as.data.frame(final_net)) %>% 
+  st_sf() %>%
+  dplyr::select(Overdose_Count = countOverdose, 
+                Local_Morans_I = Ii, 
+                P_Value = `Pr(z != E(Ii))`) %>%
+  mutate(Significant_Hotspots = ifelse(P_Value <= 0.05, 1, 0)) %>%
+  gather(Variable, Value, -geometry)
+
+#plot  
+vars <- unique(final_net.localMorans$Variable)
+varList <- list()
+j <- 14
+for(i in vars){
+  varList[[i]] <- 
+    ggplot() +
+      geom_sf(data = filter(final_net.localMorans, Variable == i), 
+              aes(fill = Value), colour=NA) +
+      scale_fill_viridis(name="") +
+      labs(title=i, caption = paste0("Figure 3.", as.character(j))) +
+      mapTheme() + theme(legend.position="bottom")
+  j <- j+1
+}
+
+do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Drug Overdose"))
+```
+
+
+### Correlation
+
+|    We further checks the significance level and creates the average nearest neighbor distance from each cell centroid to its nearest significant cluster for the local spatial process. To a better representation, we then groups the data by variable, and calculates the Pearson R correlation, besides just the scatterplots, the value of r can be shown on the plots. These |r|s are all below 0.5, indicating there is no strong correlation between my independent variables and the dependent variable. Figure 1.10 shows the correlations between the count of crashes and each risk factor. Among these factors, crime, graffiti and homelessness have a higher positive correlation than the speeding violations, but the average nearest neighbor distances have a negative correlation.
+
+```{r}
+final_net <-
+  final_net %>% 
+  mutate(overdose.isSig = 
+           ifelse(localmoran(final_net$countOverdose, final_net.weights, zero.policy=TRUE)[,5] <= 0.0000001, 1, 0)) %>%
+  mutate(overdose.isSig.dist =
+           nn_function(st_coordinates(st_centroid(final_net)),
+                       st_coordinates(st_centroid(
+                         filter(final_net, overdose.isSig == 1))), 1))
+```
+
+```{r fig.height=12,fig.width=8}
+correlation.long <-
+  st_drop_geometry(final_net) %>%
+    dplyr::select(-uniqueID, -cvID, -namelsad, -geoid) %>%
+    gather(Variable, Value, -countOverdose)
+
+correlation.long$Value <- as.numeric(as.character(correlation.long$Value))
+
+correlation.cor <-
+  correlation.long %>%
+    group_by(Variable) %>%
+    summarize(correlation = cor(Value, countOverdose, use = "complete.obs"))
+    
+ggplot(correlation.long, aes(Value, countOverdose)) +
+  geom_point(size = 0.1) +
+  geom_text(data = correlation.cor, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "orange") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Overdose count as a function of risk factors", caption = "Figure 3.18") +
+  plotTheme()
+```
+
+## Rgression Analysis
+
+|    We choose Poisson Regression because it is more suitable for rare event, such as drug overdose. For the cross-validation of the Poisson regression to test the generalizability, we used the Leave-one-group-out cross-validation that tests in a local spatial scale because incorporating spatial process can increase the accuracy of the model and produce better predictions.
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+reg.vars <- c("crime.nn", "graffiti.nn", "homeless.nn", 
+                 "hospital.nn", "park.nn")
+reg.ss.vars <- c("crime.nn", "graffiti.nn", "homeless.nn", 
+                 "hospital.nn", "park.nn", "overdose.isSig", "overdose.isSig.dist")
+reg.spatialCV <- crossValidate(
+  dataset = final_net,
+  id = "geoid",
+  dependentVariable = "countOverdose",
+  indVariables = reg.vars) %>%
+    dplyr::select(cvID = geoid, countOverdose, Prediction, geometry)
+
+reg.ss.spatialCV <- crossValidate(
+  dataset = final_net,
+  id = "geoid",
+  dependentVariable = "countOverdose",
+  indVariables = reg.ss.vars) %>%
+    dplyr::select(cvID = geoid, countOverdose, Prediction, geometry)
+```
+
+```{r}
+reg.summary <- 
+  rbind(
+    mutate(reg.spatialCV,    Error = Prediction - countOverdose,
+                             Regression = "Spatial LOGO-CV: Just Risk Factors"),
+    mutate(reg.ss.spatialCV, Error = Prediction - countOverdose,
+                             Regression = "Spatial LOGO-CV: Spatial Process")) %>%
+    st_sf() 
+```
+
+|    Figure 4.1 plots the mean absolute error based on just risk factors and the spatial process. Both two histograms are skewed to left, but it is hard to tell which one reduces errors more. Table 4.2 shows the specific mean and standard deviation of the two regressions. They have the same mean MAE, and the difference between the two standard deviation is only 0.02, which do not show a particular significant performance.
+
+```{r}
+error_by_reg_and_fold <- 
+  reg.summary %>%
+    group_by(Regression, cvID) %>% 
+    summarize(Mean_Error = mean(Prediction - countOverdose, na.rm = T),
+              MAE = mean(abs(Mean_Error), na.rm = T),
+              SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
+  ungroup()
+
+error_by_reg_and_fold %>%
+  ggplot(aes(MAE)) + 
+    geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
+    facet_wrap(~Regression) +  
+    geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
+    labs(title="Distribution of MAE",
+         x="Mean Absolute Error", y="Count",
+         caption = "Figure 4.1") +
+    plotTheme()
+```
+
+```{r}
+st_drop_geometry(error_by_reg_and_fold) %>%
+  group_by(Regression) %>% 
+    summarize(Mean_MAE = round(mean(MAE), 2),
+              SD_MAE = round(sd(MAE), 2)) %>%
+   kable(caption = "Table 4.2") %>%
+    kable_styling("striped", full_width = F)
+```
+
+|    Figure 4.3 shows the map of model errors of two regressions. The result of the LOGO cross validation represents the spatial correlation. In the west Mesa, areas in the significant hotspot have a higher error.
+
+```{r}
+error_by_reg_and_fold %>%
+  filter(str_detect(Regression, "LOGO")) %>%
+  ggplot() +
+    geom_sf(aes(fill = MAE)) +
+    facet_wrap(~Regression) +
+    scale_fill_viridis() +
+    labs(title = "Overdose errors by LOGO-CV Regression",
+         caption = "Figure 4.3") +
+    mapTheme() + theme(legend.position="bottom")
+```
+
+|    Table 4.4 calculates a spatial weights matrix at the tract scale instead of grid cell scale, including Global Moran’s I and p-values calculated for each LOGO-CV regression. The Moran's I value are all positive, which shows that tracts with similar error values are geographically clustered.
+```{r}
+neighborhood.weights <-
+  filter(error_by_reg_and_fold, Regression == "Spatial LOGO-CV: Spatial Process") %>%
+    group_by(cvID) %>%
+      poly2nb(as_Spatial(.), queen=TRUE) %>%
+      nb2listw(., style="W", zero.policy=TRUE)
+
+filter(error_by_reg_and_fold, str_detect(Regression, "LOGO"))  %>% 
+    st_drop_geometry() %>%
+    group_by(Regression) %>%
+    summarize(Morans_I = moran.mc(abs(Mean_Error), neighborhood.weights, 
+                                 nsim = 999, zero.policy = TRUE, 
+                                 na.action=na.omit)[[1]],
+              p_value = moran.mc(abs(Mean_Error), neighborhood.weights, 
+                                 nsim = 999, zero.policy = TRUE, 
+                                 na.action=na.omit)[[3]])%>%
+    kable(caption = "Table 4.4") %>%
+    kable_styling("striped", full_width = F)
+```
+
+## Demographic factors
+
+|    We added demographics data into our model and four maps below show the distribution of the categorized demographics data. From these maps, the western part of Mesa has more racial minorities with lower educational degree, higher unemployment rate and lower median household income, which correlates with the pattern of drug overdose.
+
+```{r message=FALSE, include=FALSE}
+census20 <- census20 %>%
+  st_drop_geometry() %>%
+  rename(geoid = GEOID)%>%
+  mutate(whiteContext = ifelse(pctWhite > .75, "Majority_White", "Majority_Non_White"),
+         eduContext = ifelse(pctBachMore > .15, "High_Bachmor", "Low_Bachmor"),
+         UnemployedContext = ifelse(pctUnemploy > .02, "High_Unemployed", "Low_Unemployed"),
+         IncomeContext = ifelse(MedHHInc > 65000, "High_Income", "Low_Income")
+         )
+joined_tract <- left_join(tract, census20, by = "geoid")
+```
+
+
+```{r}
+ggplot(joined_tract) +
+  geom_sf(aes(fill = whiteContext)) +
+  scale_fill_manual(values = c("Majority_White" = "blue", "Majority_Non_White" = "red")) +
+  labs(title = "Map showing Majority White and Non-White Areas",
+       fill = "Demographic Context",
+       caption = "Figure 5.1") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(joined_tract) +
+  geom_sf(aes(fill = eduContext)) +
+  scale_fill_manual(values = c("High_Bachmor" = "blue", "Low_Bachmor" = "red")) +
+  labs(title = "Map showing Majority Bachlor degree and Non-Bachlor degree",
+       fill = "Demographic Context",
+       caption = "Figure 5.2") +
+  theme_minimal()
+```
+```{r}
+ggplot(joined_tract) +
+  geom_sf(aes(fill = UnemployedContext)) +
+  scale_fill_manual(values = c("Low_Unemployed" = "blue", "High_Unemployed" = "red")) +
+  labs(title = "Map showing Majority Unemployed and Non-unemployed",
+       fill = "Demographic Context",
+       caption = "Figure 5.3") +
+  theme_minimal()
+```
+
+
+```{r}
+ggplot(joined_tract) +
+  geom_sf(aes(fill = IncomeContext)) +
+  scale_fill_manual(values = c("High_Income" = "blue", "Low_Income" = "red")) +
+  labs(title = "Map showing high median household income and low median household income",
+       fill = "Demographic Context",
+       caption = "Figure 5.4") +
+  theme_minimal()
+```
+
+|    Table 5.5 refers to the mean error by 4 neighborhood demographics context in LOGO cross validation. In the group of majority non-white, low income, low educational degree and high unemployed rate, just risk factors have a slightly higher mean error (-0.338) than spatial process (-0.284), and both are under-predicted. The group of majority white, higher educational degree, higher income and lower unemployed rate as the smallest error, which is only 0.018. Therefore, areas with a higher risk of overdose have a higher predicted error.
+
+```{r echo=TRUE, message = FALSE}
+reg.summary %>% 
+    st_centroid() %>%
+    st_join(joined_tract) %>%
+    na.omit() %>%
+      st_drop_geometry() %>%
+      group_by(Regression, whiteContext, eduContext, IncomeContext, UnemployedContext) %>%
+      summarize(mean.Error = mean(Error, na.rm = T)) %>%
+      kable(caption = "Table 5.5 Mean Error by tract demographics context") %>%
+        kable_styling("striped", full_width = F)  
+```
+## Map Comparing Kernel Density to Risk Predictions
+
+|    To organize the data needed for mapping the kernel density map, we initially converts the overdose data to a point pattern using the coordinates from the overdose data and the bounding box of the fishnet data. And then we calculated the kernel density estimation for the point pattern using a search radius of 1000 feet, as shown in Figure 6.1.
+
+```{r}
+overdose_ppp <- as.ppp(st_coordinates(filtered_Overdose), W = st_bbox(final_net))
+overdose_KD <- density.ppp(overdose_ppp, 1000)
+
+as.data.frame(overdose_KD) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
+  aggregate(., final_net, mean) %>%
+   ggplot() +
+     geom_sf(aes(fill=value)) +
+     geom_sf(data = filtered_Overdose, size = .5, colour = "red") +
+     scale_fill_viridis(name = "Density") +
+     labs(title = "Kernel density of 2020 overdose",
+          caption = "Figure 6.1") +
+     mapTheme()
+```
+
+|    To make prediction for the next year, we first have to retrieve the data for 2021 following the same steps we did for 2020. Afterward, we calculated the kernel density for the assault in 2020. The resulting kernel density is transformed into a spatial feature which is then combined with the fishnet data using a spatial join. Subsequently, the density values are converted into 100 percentiles and further categorized into 5 distinct risk categories. Finally, an additional spatial join is performed to incorporate the count of observed burglary incidents in 2021. Each grid cell is now linked to a specific risk category and the count of overdose incidents recorded in 2021. The resulting map (Figure 6.2) displays the risk categories for both kernel density and prediction models, with a subset of 2021 incident points overlaid. Using spacial processed regression rather than just risk factors is due to its higher accuracy. The graphs indicates that in 2018 the higher risk of assault is at west to downtown area in Mesa.
+
+```{r}
+Overdose_21 <- st_intersection(drugOverdose, mesaBoundary) %>%
+  filter(Year == "2021")
+```
+
+```{r}
+overdose_KDE_sf <- as.data.frame(overdose_KD) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
+  aggregate(., final_net, mean) %>%
+  mutate(label = "Kernel Density",
+         Risk_Category = ntile(value, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  cbind(
+    aggregate(
+      dplyr::select(Overdose_21) %>% mutate(overdoseCount = 1), ., sum) %>%
+    mutate(overdoseCount = replace_na(overdoseCount, 0))) %>%
+  dplyr::select(label, Risk_Category, overdoseCount)
+```
+
+```{r}
+overdose_risk_sf <-
+  filter(reg.summary, Regression == "Spatial LOGO-CV: Spatial Process") %>%
+  mutate(label = "Risk Predictions",
+         Risk_Category = ntile(Prediction, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  cbind(
+    aggregate(
+      dplyr::select(Overdose_21) %>% mutate(overdoseCount = 1), ., sum) %>%
+      mutate(overdoseCount = replace_na(overdoseCount, 0))) %>%
+  dplyr::select(label,Risk_Category, overdoseCount)
+```
+
+
+
+```{r}
+rbind(overdose_KDE_sf, overdose_risk_sf) %>%
+  na.omit() %>%
+  gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
+  ggplot() +
+    geom_sf(aes(fill = Risk_Category), colour = NA) +
+    geom_sf(data = Overdose_21, size = .5, colour = "red") +
+    facet_wrap(~label, ) +
+    scale_fill_viridis(discrete = TRUE) +
+    labs(title="Comparison of Kernel Density and Risk Predictions",
+         subtitle="2021 Overdose Count; 2020 Overdose risk predictions",
+         caption = "Figure 6.2") +
+    mapTheme()
+```
+
+|    The bar plot (Figure 6.3) shows the result more clearly. Overall, our model can predict the risk accurately. It is hard to tell the difference between the kernel density and risk predictions in the 90% to 100% category. The second highest risk category shows that the kernel density captures a little more observed incidents than the risk predictions. The risk prediction model provides a robust targeting tool for allocating the police and public health resources.
+
+```{r}
+rbind(overdose_KDE_sf, overdose_risk_sf) %>%
+  st_set_geometry(NULL) %>% na.omit() %>%
+  gather(Variable, Value, -label, -Risk_Category) %>%
+  group_by(label, Risk_Category) %>%
+  summarize(countOverdose = sum(Value)) %>%
+  ungroup() %>%
+  group_by(label) %>%
+  mutate(Rate_of_test_set_Overdose = countOverdose / sum(countOverdose)) %>%
+    ggplot(aes(Risk_Category,Rate_of_test_set_Overdose)) +
+      geom_bar(aes(fill=label), position="dodge", stat="identity") +
+      scale_fill_viridis(discrete = TRUE) +
+      labs(title = "Risk prediction vs. Kernel density, 2021 Overdose",
+           caption = "Figure 6.3") +
+      plotTheme() + theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
+```
+
+## Conclusion and Discussion
+
+|    Overall, our model has a great performance in predicting the risks of overdose incidents. The mean absolute errors are relatively small. Although there is not much difference between just risk factors and spatial process, we would still recommend our regression model incorporating spatial process but not just risk factors to be put into production. Therefore, our application tells government to allocate more health care and public safety resources to western Mesa, and the updated data should be included into our application on time for more accurate predictions. To improve our model, we suppose to include more factors, such as bars, pharmacy stores, abandoned buildings and sanitation. However, because of the limited data sources, we cannot find such datasets and include in our model. It is also possible that the incidents are under-reported, as we discussed in the first section. This is why we include the self-report system in our application to help us improve the model better.
+
+## Reference
+
+Datasets:  United States Census Bureau: https://data.census.gov/
+|           Mesa Open Data Portal: https://data.mesaaz.gov/
+|           ArcGIS Open Data
+Articles: Steif, Ken. (2021) Public Policy Analytics: Code & Context for Data Science in Government
+Posts: MUSA 508 ED Discussion Board
+
+
