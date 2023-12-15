@@ -650,10 +650,13 @@ rbind(overdose_KDE_sf, overdose_risk_sf) %>%
 
 ## Reference
 
-Datasets:  United States Census Bureau: https://data.census.gov/
-|           Mesa Open Data Portal: https://data.mesaaz.gov/
-|           ArcGIS Open Data
-Articles: Steif, Ken. (2021) Public Policy Analytics: Code & Context for Data Science in Government
-Posts: MUSA 508 ED Discussion Board
+Datasets:  
+United States Census Bureau: https://data.census.gov/  
+Mesa Open Data Portal: https://data.mesaaz.gov/  
+ArcGIS Open Data  
+Articles:   
+Steif, Ken. (2021) Public Policy Analytics: Code & Context for Data Science in Government    
+Posts:   
+MUSA 508 ED Discussion Board
 
 
